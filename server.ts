@@ -92,11 +92,16 @@ async function startServer() {
   });
 
   // Basic defense-in-depth security headers.
+  // NOTE: COOP must be `same-origin-allow-popups`, NOT `same-origin`.
+  // `same-origin` severs `window.opener` in cross-origin popups, which breaks
+  // Firebase Auth's popup sign-in: the OAuth handler page cannot relay the
+  // auth event back to the app, the popup closes and Firebase rejects with
+  // `auth/popup-closed-by-user`.
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     res.removeHeader('X-Powered-By');
     next();
