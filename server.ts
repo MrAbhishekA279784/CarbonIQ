@@ -7,8 +7,6 @@ import { calculateFootprint } from "./src/lib/carbon-engine";
 import { generateRecommendations } from "./src/lib/recommendation-engine";
 import { simulateScenario } from "./src/lib/simulator-engine";
 import { generateWeeklyMissions } from "./src/lib/mission-engine";
-// Removed firebase-admin for now until config is stable, will use it if tool succeeds or provide as skeleton
-// import admin from "firebase-admin";
 
 dotenv.config();
 
@@ -26,6 +24,36 @@ const ai = new GoogleGenAI({
     }
   }
 });
+
+// --- Simple in-memory rate limiter (per IP) ---
+const WINDOW_MS = 60 * 1000;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimit(maxRequests: number) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const bucket = rateBuckets.get(ip);
+    const now = Date.now();
+    if (!bucket || bucket.resetAt < now) {
+      rateBuckets.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+      return next();
+    }
+    bucket.count += 1;
+    if (bucket.count > maxRequests) {
+      return res.status(429).json({ error: "Too many requests. Please slow down." });
+    }
+    return next();
+  };
+}
+
+// Bound the request log to method + path only (never bodies/headers).
+function safeUrl(url: string): string {
+  try {
+    return new URL(url, "http://localhost").pathname;
+  } catch {
+    return url;
+  }
+}
 
 function sanitizeAIInput(input: string): string {
   if (!input) return "";
@@ -52,13 +80,25 @@ function sanitizeAIInput(input: string): string {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json());
+  app.set('trust proxy', 1);
+  app.use(express.json({ limit: '256kb' }));
 
-  // Request logging middleware
+  // Request logging middleware — method + path only (no bodies, headers or tokens).
   app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    console.log(`${new Date().toISOString()} - ${req.method} ${safeUrl(req.url)}`);
+    next();
+  });
+
+  // Basic defense-in-depth security headers.
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    res.removeHeader('X-Powered-By');
     next();
   });
 
@@ -87,9 +127,9 @@ async function startServer() {
   // --- RECOMMENDATION ENGINE API ---
   app.post("/api/recommendations", (req, res) => {
     try {
-      const { profile, footprint } = req.body;
+      const { profile, footprint, completedIds } = req.body;
       if (!profile || !footprint) return res.status(400).json({ error: "Profile and footprint required" });
-      const recommendations = generateRecommendations(profile, footprint);
+      const recommendations = generateRecommendations(profile, footprint, completedIds);
       res.json(recommendations);
     } catch (err) {
       const error = err as Error;
@@ -160,10 +200,13 @@ async function startServer() {
   });
 
   // API Route for AI Coach
-  app.post("/api/gemini/coach", async (req, res) => {
+  app.post("/api/gemini/coach", rateLimit(20), async (req, res) => {
     try {
       const { prompt, userProfile, footprint, totalFootprint, budget } = req.body;
-      
+      if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+
+      const sanitized = sanitizeAIInput(prompt);
+
       const context = {
         profile: userProfile,
         footprint,
@@ -184,51 +227,38 @@ async function startServer() {
           3. Never perform manual CO2 calculations; explain existing ones.
           4. Focus on the largest emission categories if they exceed 30% of total.`,
         },
-        contents: prompt
+        contents: sanitized
       });
       res.json({ text: response.text });
     } catch (err) {
       const error = err as Error;
-      console.error("Gemini API Error:", error);
-      res.status(500).json({ error: error.message });
+      console.error("Gemini API Error:", error.message);
+      res.status(500).json({ error: "Failed to generate AI response" });
     }
   });
 
   // Multi-turn Chat API
-  app.post("/api/gemini/chat", async (req, res) => {
+  app.post("/api/gemini/chat", rateLimit(30), async (req, res) => {
     try {
       const { messages, userProfile, carbonData, recentActivities, activeMissions } = req.body;
 
-      console.log("[CHAT] Incoming request body keys:", Object.keys(req.body));
-      console.log("[CHAT] messages length:", messages?.length);
-      console.log("[CHAT] GEMINI_API_KEY loaded:", !!process.env.GEMINI_API_KEY);
-
-      // Sanitize the last user message of the history
-      if (messages && messages.length > 0) {
-        messages[messages.length - 1].content = sanitizeAIInput(messages[messages.length - 1].content);
-        console.log("[CHAT] Last message role:", messages[messages.length - 1].role, "content:", messages[messages.length - 1].content.substring(0, 100));
+      if (!messages || !Array.isArray(messages) || messages.length === 0) {
+        return res.status(400).json({ error: "Messages are required" });
       }
 
-      const history = messages.slice(0, -1).map((m: {role: string, content: string}) => ({
+      const sanitized = sanitizeAIInput(String(messages[messages.length - 1].content || ""));
+      const chatHistory = messages.slice(0, -1).map((m: {role?: string, content?: string}) => ({
         role: m.role === 'user' ? 'user' : 'model',
-        parts: [{ text: m.content }]
+        parts: [{ text: String(m.content || "") }]
       }));
-      console.log("[CHAT] History length:", history.length);
-      if (history.length > 0) {
-        console.log("[CHAT] First history entry role:", history[0].role);
-        console.log("[CHAT] Last history entry role:", history[history.length - 1].role);
-      }
-
-      const lastMessageContent = messages[messages.length - 1].content;
-      console.log("[CHAT] Creating chat with model: gemini-2.5-flash");
 
       const chat = ai.chats.create({
         model: "gemini-2.5-flash",
         config: {
           systemInstruction: `You are EcoAgent AI, an expert sustainability coach.
           You help users understand and reduce their carbon footprint.
-          User Profile: ${JSON.stringify(userProfile)}
-          Current Footprint: ${JSON.stringify(carbonData)}
+          User Profile: ${JSON.stringify(userProfile || {})}
+          Current Footprint: ${JSON.stringify(carbonData || {})}
           Recent Carbon-Saving Activities: ${JSON.stringify(recentActivities || [])}
           Active Sustainable Missions: ${JSON.stringify(activeMissions || [])}
           
@@ -240,60 +270,51 @@ async function startServer() {
           - If asked about specific actions, refer to their current categories (Transport, Energy, etc).
           - Keep responses relatively brief (max 150 words) for mobile readability.`,
         },
-        history
+        history: chatHistory
       });
 
-      console.log("[CHAT] Chat created, sending message...");
-      const response = await chat.sendMessage({
-        message: lastMessageContent
-      });
-
-      console.log("[CHAT] Response received. Has candidates:", !!response.candidates);
-      console.log("[CHAT] response.text:", response.text ? response.text.substring(0, 200) : "UNDEFINED");
+      const response = await chat.sendMessage({ message: sanitized });
 
       res.json({ text: response.text });
     } catch (err) {
       const error = err as Error;
       console.error("[CHAT] ERROR:", error.message);
-      console.error("[CHAT] Error stack:", error.stack);
-      console.error("[CHAT] Error name:", error.name);
-      if ('error' in error) {
-        console.error("[CHAT] Error detail:", JSON.stringify((error as any).error));
-      }
       res.status(500).json({ error: "Failed to connect to EcoAgent AI" });
     }
   });
 
   // API Route for analyzing what-if scenarios
-  app.post("/api/gemini/whatif", async (req, res) => {
+  app.post("/api/gemini/whatif", rateLimit(20), async (req, res) => {
     try {
       const { prompt, userProfile, currentFootprint } = req.body;
-      const sanitizedPrompt = sanitizeAIInput(prompt);
+      if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+      const sanitized = sanitizeAIInput(prompt);
       
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         config: {
-          systemInstruction: "You are a simulation analyzer for CARBONIQ. Analyze the what-if scenario based on the user's current footprint and profile. Provide a short, structured analysis of the impact. User Profile: " + JSON.stringify(userProfile) + " Current Footprint: " + currentFootprint + " kg CO2e. Respond in concise bullet points.",
+          systemInstruction: "You are a simulation analyzer for CARBONIQ. Analyze the what-if scenario based on the user's current footprint and profile. Provide a short, structured analysis of the impact. User Profile: " + JSON.stringify(userProfile || {}) + " Current Footprint: " + currentFootprint + " kg CO2e. Respond in concise bullet points.",
         },
-        contents: sanitizedPrompt
+        contents: sanitized
       });
       res.json({ text: response.text });
     } catch (err) {
       const error = err as Error;
-      console.error("Gemini API Error:", error);
-      res.status(500).json({ error: error.message });
+      console.error("Gemini API Error:", error.message);
+      res.status(500).json({ error: "Failed to analyze scenario" });
     }
   });
 
   // API Route for search grounding
-  app.post("/api/gemini/search", async (req, res) => {
+  app.post("/api/gemini/search", rateLimit(15), async (req, res) => {
     try {
       const { prompt } = req.body;
-      const sanitizedPrompt = sanitizeAIInput(prompt);
+      if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+      const sanitized = sanitizeAIInput(prompt);
       
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: sanitizedPrompt,
+        contents: sanitized,
         config: {
           tools: [{ googleSearch: {} }]
         }
@@ -301,8 +322,8 @@ async function startServer() {
       res.json({ text: response.text });
     } catch (err) {
       const error = err as Error;
-      console.error("Gemini Search API Error:", error);
-      res.status(500).json({ error: error.message });
+      console.error("Gemini Search API Error:", error.message);
+      res.status(500).json({ error: "Failed to search" });
     }
   });
 

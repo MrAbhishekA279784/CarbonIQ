@@ -136,12 +136,7 @@ export const TrendChart: React.FC<TrendChartProps> = React.memo(({ carbonData, a
         });
       } else {
         return [
-          { name: 'Jan', value: 300 },
-          { name: 'Feb', value: 280 },
-          { name: 'Mar', value: 250 },
-          { name: 'Apr', value: 215 },
-          { name: 'May', value: 185 },
-          { name: 'Jun', value: Math.round(baseMonthly) },
+          { name: 'Current', value: Math.round(baseMonthly) },
         ];
       }
 

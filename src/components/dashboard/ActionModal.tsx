@@ -60,6 +60,10 @@ export const ActionModal = React.memo(function ActionModal({ action, trigger }: 
                 <div className="text-xs font-bold text-neutral-500 uppercase mb-1 flex items-center gap-1"><Clock size={14}/> Time</div>
                 <div className="font-semibold">{action.timeRequired} {action.timeRequired === 1 ? 'hour' : 'hours'}</div>
              </div>
+             <div className="flex-1">
+                <div className="text-xs font-bold text-amber-600 uppercase mb-1 flex items-center gap-1">⭐ XP Reward</div>
+                <div className="font-semibold text-amber-600">+{action.xpReward ?? 15} XP</div>
+             </div>
           </div>
           
           {!action.completed && (

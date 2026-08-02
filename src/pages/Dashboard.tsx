@@ -13,6 +13,7 @@ import { ActionModal } from "../components/dashboard/ActionModal";
 import { FootprintPie } from "../components/dashboard/FootprintPie";
 import { TrendChart } from "../components/dashboard/TrendChart";
 import { carbonEquivalency } from "../lib/utils";
+import { HABIT_MONTHLY_SAVINGS_KG } from "../lib/carbon-engine";
 
 import { CATEGORY_ICONS } from "../lib/constants";
 
@@ -41,6 +42,15 @@ export function Dashboard() {
     };
     void initData();
   }, [hasOnboarded, updateCarbonData, fetchRecommendations, fetchMissions]);
+
+  const completedHabitCount = habits.filter(h => h.completed).length;
+  const todaySavings = Math.max(0, completedHabitCount * HABIT_MONTHLY_SAVINGS_KG);
+  const history = carbonData.history || [];
+  const prevMonth = history.length >= 2 ? history[history.length - 2].value : (history.length === 1 ? history[0].value : carbonData.total);
+  const monthlyDelta = history.length > 0 && prevMonth > 0
+    ? Math.max(0, Math.round(((prevMonth - carbonData.total) / prevMonth) * 100))
+    : 0;
+  const remainingBudget = Math.max(0, (carbonData.budget || 300) - carbonData.spent);
 
 
 
@@ -125,14 +135,14 @@ export function Dashboard() {
               
               <div className="inline-flex items-center space-x-1.5 bg-white/10 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider backdrop-blur-md border border-white/5 shadow-inner mb-10 text-green-300">
                 <ArrowDownToLine size={12} />
-                <span>15% vs last month</span>
+                <span>{monthlyDelta >= 0 ? `${monthlyDelta}% vs last month` : `Budget left: ${remainingBudget} kg`}</span>
               </div>
               
               <div className="flex items-center space-x-3">
                  <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center border border-green-500/30">
                     <Check size={14} className="text-green-400" />
                  </div>
-                 <p className="text-xs font-bold text-green-100/70 uppercase tracking-tight">Better than 67% of users</p>
+                 <p className="text-xs font-bold text-green-100/70 uppercase tracking-tight">{todaySavings > 0 ? `${todaySavings} kg saved today` : 'Log habits to save carbon'}</p>
               </div>
 
               {/* Decorative chart lines */}
@@ -188,7 +198,7 @@ export function Dashboard() {
               <div>
                  <p className="text-neutral-500 font-medium text-sm mb-2">Eco Level</p>
                  <h2 className="text-3xl font-bold text-violet-700 tracking-tight mb-1">Level {user.level}</h2>
-                 <p className="text-violet-500/80 font-medium text-sm">{user.xp >= 500 ? 'Sustainability Champion' : 'Eco Explorer'}</p>
+                 <p className="text-violet-500/80 font-medium text-sm">{user.lifetimeXp >= 1000 ? 'Sustainability Champion' : user.lifetimeXp >= 500 ? 'Eco Guardian' : 'Eco Explorer'}</p>
               </div>
 
               <div className="relative flex justify-end -mt-4 mb-2">
@@ -203,10 +213,11 @@ export function Dashboard() {
               
               <div>
                 <div className="flex justify-between text-xs font-semibold text-violet-700/70 mb-1.5">
-                  <span>{user.xp} XP</span>
-                  <span>500 XP</span>
+                  <span>{user.xp % 500} XP</span>
+                  <span>Lifetime {user.lifetimeXp || 0} XP</span>
                 </div>
-                <Progress value={(user.xp / 500) * 100} className="h-1.5 bg-violet-200 [&>div]:bg-violet-600" />
+                <Progress value={((user.xp || 0) % 500 / 500) * 100} className="h-1.5 bg-violet-200 [&>div]:bg-violet-600" />
+                <p className="text-[10px] font-bold text-violet-500/70 uppercase tracking-widest mt-2">🔥 {user.streak || 0} day streak</p>
               </div>
             </CardContent>
           </Card>
@@ -278,7 +289,7 @@ export function Dashboard() {
            </div>
            
            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-             {actions.slice(0, 4).map(action => {
+             {actions.slice(0, 8).map(action => {
                 const Icon = CATEGORY_ICONS[action.category] || Leaf;
                 const tagColor = action.impact === 'High' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700';
                 
@@ -292,7 +303,11 @@ export function Dashboard() {
                           </div>
                           <div>
                             <h4 className="font-bold text-sm text-neutral-900 truncate pr-2">{action.title}</h4>
-                            <p className="text-[11px] text-neutral-500 font-medium">Save {action.carbonReduction} kg CO₂e / month</p>
+                            {action.completed ? (
+                              <span className="text-[11px] font-bold text-green-600">✓ Completed</span>
+                            ) : (
+                              <p className="text-[11px] text-neutral-500 font-medium">Save {action.carbonReduction} kg CO₂e / month</p>
+                            )}
                           </div>
                         </div>
                         

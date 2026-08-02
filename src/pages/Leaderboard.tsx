@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { db, auth } from '../lib/firebase';
-import { collection, query, orderBy, limit, getDocs, startAfter, DocumentSnapshot } from 'firebase/firestore';
+import { collection, query, orderBy, limit, getDocs, startAfter, DocumentSnapshot, onSnapshot } from 'firebase/firestore';
 import { Card, CardContent } from '../components/ui/card';
-import { Trophy, Medal, User, TrendingUp } from 'lucide-react';
+import { Trophy, Medal, User, Flame } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface LeaderboardUser {
@@ -11,6 +11,8 @@ interface LeaderboardUser {
   photoURL?: string;
   level: number;
   ecoPoints: number;
+  lifetimeXp: number;
+  streak: number;
 }
 
 export const Leaderboard: React.FC = () => {
@@ -20,6 +22,12 @@ export const Leaderboard: React.FC = () => {
   const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
   const [hasMore, setHasMore] = useState(true);
 
+  const baseQuery = () => query(
+    collection(db, 'leaderboard'),
+    orderBy('lifetimeXp', 'desc'),
+    limit(10)
+  );
+
   const fetchUsers = async (isFirst = true) => {
     try {
       if (isFirst) {
@@ -28,16 +36,12 @@ export const Leaderboard: React.FC = () => {
         setLoadingMore(true);
       }
 
-      let q = query(
-        collection(db, 'leaderboard'),
-        orderBy('ecoPoints', 'desc'),
-        limit(10)
-      );
+      let q = baseQuery();
 
       if (!isFirst && lastDoc) {
         q = query(
           collection(db, 'leaderboard'),
-          orderBy('ecoPoints', 'desc'),
+          orderBy('lifetimeXp', 'desc'),
           startAfter(lastDoc),
           limit(10)
         );
@@ -52,11 +56,7 @@ export const Leaderboard: React.FC = () => {
         setUsers(prev => [...prev, ...data]);
       }
 
-      if (snap.docs.length < 10) {
-        setHasMore(false);
-      } else {
-        setHasMore(true);
-      }
+      setHasMore(snap.docs.length >= 10);
 
       if (snap.docs.length > 0) {
         setLastDoc(snap.docs[snap.docs.length - 1]);
@@ -70,7 +70,22 @@ export const Leaderboard: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchUsers(true);
+    if (!auth.currentUser) return undefined;
+    const q = baseQuery();
+    const unsubscribe = onSnapshot(q, (snap) => {
+      const data = snap.docs.map(doc => doc.data() as LeaderboardUser);
+      if (data.length > 0) {
+        setUsers(data);
+        setLastDoc(snap.docs[snap.docs.length - 1]);
+      }
+      setHasMore(snap.docs.length >= 10);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error in leaderboard listener", error);
+      fetchUsers(true);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   if (loading) return <div className="p-8 text-center">Loading leaderboard...</div>;
@@ -107,10 +122,15 @@ export const Leaderboard: React.FC = () => {
                 <div>
                    <h3 className="font-bold text-neutral-900 truncate">{user.name}</h3>
                    <p className="text-xs font-bold text-neutral-400 uppercase tracking-widest">Level {user.level}</p>
+                   {user.streak > 0 && (
+                     <p className="text-[10px] font-bold text-orange-500 flex items-center justify-center gap-0.5">
+                       <Flame size={10} className="mr-0.5" />{user.streak} day streak
+                     </p>
+                   )}
                 </div>
                 <div className="bg-white/50 rounded-2xl py-2 px-4 inline-block">
-                   <span className="text-xl font-black text-neutral-900">{user.ecoPoints.toLocaleString()}</span>
-                   <span className="text-[10px] font-bold text-neutral-400 uppercase ml-1">pts</span>
+                   <span className="text-xl font-black text-neutral-900">{user.lifetimeXp.toLocaleString()}</span>
+                   <span className="text-[10px] font-bold text-neutral-400 uppercase ml-1">lifetime XP</span>
                 </div>
               </CardContent>
             </Card>
@@ -121,7 +141,7 @@ export const Leaderboard: React.FC = () => {
       <Card className="rounded-[2rem] border-neutral-100 shadow-sm overflow-hidden">
         <div className="bg-neutral-50 px-6 py-4 border-b border-neutral-100 flex justify-between text-[10px] font-black uppercase tracking-widest text-neutral-400">
           <span>Rank & User</span>
-          <span>EcoPoints</span>
+          <span>Lifetime XP</span>
         </div>
         <div className="divide-y divide-neutral-100">
           {users.map((user, idx) => {
@@ -150,11 +170,13 @@ export const Leaderboard: React.FC = () => {
                 </div>
                 <div className="flex items-center space-x-4">
                   <div className="text-right">
-                     <p className="font-black text-neutral-900">{user.ecoPoints.toLocaleString()}</p>
-                     <div className="flex items-center text-[10px] text-green-500 font-bold justify-end">
-                        <TrendingUp size={10} className="mr-0.5" />
-                        <span>+12%</span>
-                     </div>
+                     <p className="font-black text-neutral-900">{user.lifetimeXp.toLocaleString()}</p>
+                     {user.streak > 0 && (
+                       <div className="flex items-center text-[10px] text-orange-500 font-bold justify-end">
+                          <Flame size={10} className="mr-0.5" />
+                          <span>🔥 {user.streak} days</span>
+                       </div>
+                     )}
                   </div>
                 </div>
               </div>

@@ -2,10 +2,10 @@ import React from 'react';
 import { useAuth } from '../components/auth/AuthContext';
 import { useAppStore } from '../store';
 import { Card, } from '../components/ui/card';
-import { LogOut, User, Shield, Bell, Trash2, ChevronRight, Globe } from 'lucide-react';
+import { LogOut, User, Shield, Bell, Trash2, ChevronRight } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { ProfileEditModal } from '../components/profile/ProfileModals';
-import { PrivacySecurityModal, NotificationsModal, LanguageModal } from '../components/settings/SettingsModals';
+import { PrivacySecurityModal, NotificationsModal, DeleteAccountModal } from '../components/settings/SettingsModals';
 
 export const Settings: React.FC = () => {
   const { logout } = useAuth();
@@ -74,21 +74,6 @@ export const Settings: React.FC = () => {
                     <ChevronRight size={18} className="text-neutral-300 group-hover:text-primary transition-colors" />
                  </div>
                } />
-
-               <LanguageModal trigger={
-                 <div className="p-4 flex items-center justify-between hover:bg-neutral-50 transition-colors cursor-pointer group w-full">
-                    <div className="flex items-center space-x-4">
-                      <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
-                         <Globe size={20} />
-                      </div>
-                      <div className="text-left">
-                         <p className="text-sm font-bold text-neutral-900">Language & Region</p>
-                         <p className="text-xs text-neutral-400">English (US)</p>
-                      </div>
-                    </div>
-                    <ChevronRight size={18} className="text-neutral-300 group-hover:text-primary transition-colors" />
-                 </div>
-               } />
              </div>
           </Card>
         </section>
@@ -103,13 +88,15 @@ export const Settings: React.FC = () => {
             <span>Sign Out</span>
           </Button>
 
-          <Button 
-            variant="ghost" 
-            className="w-full rounded-2xl h-12 text-neutral-400 font-bold hover:bg-red-50 hover:text-red-700 transition-all flex items-center justify-center space-x-2"
-          >
-            <Trash2 size={18} />
-            <span>Delete Account</span>
-          </Button>
+          <DeleteAccountModal trigger={
+            <Button 
+              variant="ghost" 
+              className="w-full rounded-2xl h-12 text-neutral-400 font-bold hover:bg-red-50 hover:text-red-700 transition-all flex items-center justify-center space-x-2"
+            >
+              <Trash2 size={18} />
+              <span>Delete Account</span>
+            </Button>
+          } />
         </section>
 
         <p className="text-center text-[10px] text-neutral-400 font-bold uppercase tracking-[0.2em] pt-8">

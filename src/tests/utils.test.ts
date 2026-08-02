@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safeDivide, carbonEquivalency, cn } from '../lib/utils';
+import { safeDivide, carbonEquivalency, cn, ecoLevelFromLifetimeXp, XP_PER_LEVEL } from '../lib/utils';
 
 describe('utils', () => {
   describe('cn', () => {
@@ -32,6 +32,21 @@ describe('utils', () => {
     });
     it('returns phone charges for small numbers', () => {
       expect(carbonEquivalency(10)).toMatch(/phone charges/);
+    });
+  });
+
+  describe('ecoLevelFromLifetimeXp', () => {
+    it('starts at level 1', () => {
+      expect(ecoLevelFromLifetimeXp(0)).toBe(1);
+      expect(ecoLevelFromLifetimeXp(250)).toBe(1);
+    });
+    it('advances every XP_PER_LEVEL', () => {
+      expect(ecoLevelFromLifetimeXp(XP_PER_LEVEL)).toBe(2);
+      expect(ecoLevelFromLifetimeXp(XP_PER_LEVEL * 3 + 40)).toBe(4);
+    });
+    it('never returns values below 1', () => {
+      expect(ecoLevelFromLifetimeXp(-50)).toBe(1);
+      expect(ecoLevelFromLifetimeXp(NaN)).toBe(1);
     });
   });
 });

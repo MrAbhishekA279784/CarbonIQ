@@ -23,15 +23,8 @@ service cloud.firestore {
 
     match /users/{uid} {
       allow read: if isOwner(uid);
-      allow write: if isOwner(uid)
-        && (existing() == null 
-            || !('stats' in existing()) 
-            || !('stats' in incoming())
-            || (
-                 incoming().stats.xp - existing().stats.xp <= 500
-              && incoming().stats.level - existing().stats.level <= 1
-              && incoming().stats.ecoPoints - existing().stats.ecoPoints <= 1000
-            ));
+      allow create, update: if isOwner(uid);
+      allow delete: if isOwner(uid);
 
       match /activities/{activityId} {
         allow read, write: if isOwner(uid);
@@ -54,22 +47,32 @@ service cloud.firestore {
       match /reports/{reportId} {
         allow read, write: if isOwner(uid);
       }
+      match /dailyHistory/{recordId} {
+        allow read, write: if isOwner(uid);
+      }
+      match /trees/{treeId} {
+        allow read, write: if isOwner(uid);
+      }
+      match /simulations/{simulationId} {
+        allow read, write: if isOwner(uid);
+      }
     }
 
     match /leaderboard/{uid} {
       allow list, get: if isSignedIn();
-      allow write: if isOwner(uid)
+      allow create, update: if isOwner(uid)
         && incoming().uid == request.auth.uid
         && incoming().name is string
+        && incoming().name.size() <= 100
         && incoming().level is number
+        && incoming().level >= 0
+        && incoming().level <= 1000
         && incoming().ecoPoints is number
-        && (existing() == null
-            || !('ecoPoints' in existing())
-            || (
-                 incoming().ecoPoints - existing().ecoPoints <= 1000
-               && incoming().level - existing().level <= 1
-             ))
-        && incoming().updatedAt <= request.time;
+        && incoming().ecoPoints >= 0
+        && incoming().ecoPoints <= 1000000
+        && incoming().streak is number
+        && incoming().streak >= 0;
+      allow delete: if isOwner(uid);
     }
   }
 }

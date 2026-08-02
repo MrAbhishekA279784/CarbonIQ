@@ -3,13 +3,13 @@ export type CarbonCategory = "Transport" | "Home Energy" | "Food" | "Shopping" |
 export interface UserProfile {
   name: string;
   city: string;
-  country: string; // Regional electricity grid country code, e.g. US, UK, DE, FR, IN
+  country: string;
   occupation: string;
   commuteDistance: number;
   transportMode: string;
   fuelType: string;
-  electricityUsage: number; // kWh per month
-  acUsage: number; // hours per day
+  electricityUsage: number;
+  acUsage: number;
   foodPreference: string;
   shoppingHabits: string;
   wasteHabits: string;
@@ -17,8 +17,45 @@ export interface UserProfile {
   xp: number;
   ecoPoints: number;
   completedOnboarding: boolean;
-  streak?: number;
+  lifetimeXp: number;
+  streak: number;
+  longestStreak: number;
+  totalActiveDays: number;
   lastActivityDate?: string;
+
+  // --- Extended profile fields used for carbon calculation ---
+  age?: number;
+  householdSize?: number;
+  weeklyDistanceKm?: number;
+  vehicleType?: string;
+  publicTransportUsage?: string;
+  renewableEnergy?: string;
+  cookingFuel?: string;
+  mealsOutside?: number;
+  foodWaste?: string;
+  shoppingFrequency?: string;
+  clothingPurchases?: number;
+  electronicsPurchases?: number;
+  recycling?: string;
+  composting?: string;
+  wasteGeneration?: string;
+  flightsPerYear?: number;
+  waterUsage?: string;
+  ecoPreferences?: string[];
+}
+
+export interface DailyRecord {
+  id?: string;
+  date: string; // "YYYY-MM-DD"
+  carbon: number;
+  savings: number;
+  xp: number;
+  level: number;
+  streak: number;
+  remainingBudget: number;
+  completedHabits: string[];
+  completedMissions: string[];
+  timestamp: string;
 }
 
 export interface ActionItem {
@@ -33,6 +70,7 @@ export interface ActionItem {
   cost: number;
   timeRequired: number; // in hours or abstract units
   completed?: boolean;
+  xpReward?: number;
 }
 
 export interface Mission {
@@ -52,7 +90,11 @@ export interface Achievement {
   title: string;
   description: string;
   badgeIcon: string;
-  milestoneKg: number;
+  milestoneKg?: number;
+  milestoneXp?: number;
+  milestoneStreak?: number;
+  milestoneMissions?: number;
+  type: "carbon" | "xp" | "streak" | "mission";
   unlockedAt?: string;
 }
 
@@ -70,6 +112,15 @@ export interface Activity {
   description: string;
   timestamp: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface TreeEntry {
+  id?: string;
+  count: number;
+  date: string; // "YYYY-MM-DD"
+  notes?: string;
+  offsetKg: number; // estimated annual CO2 offset (kg)
+  createdAt?: string;
 }
 
 
@@ -99,6 +150,10 @@ export const INITIAL_USER: UserProfile = {
   xp: 350,
   ecoPoints: 1250,
   completedOnboarding: false,
+  lifetimeXp: 350, // initial cumulative XP
+  streak: 0,
+  longestStreak: 0,
+  totalActiveDays: 0,
 };
 
 export const INITIAL_CARBON_DATA: CarbonData = {
@@ -124,11 +179,14 @@ export const INITIAL_CARBON_DATA: CarbonData = {
 };
 
 export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
-  { id: 'ac1', title: 'Carbon Saver I', description: 'Save 50kg of CO2', badgeIcon: '🌱', milestoneKg: 50 },
-  { id: 'ac2', title: 'Eco Warrior', description: 'Save 100kg of CO2', badgeIcon: '🛡️', milestoneKg: 100 },
-  { id: 'ac3', title: 'Earth Protector', description: 'Save 250kg of CO2', badgeIcon: '🌍', milestoneKg: 250 },
-  { id: 'ac4', title: 'Solar Soul', description: 'Save 500kg of CO2', badgeIcon: '☀️', milestoneKg: 500 },
-  { id: 'ac5', title: 'Planet Hero', description: 'Save 1000kg of CO2', badgeIcon: '🦸', milestoneKg: 1000 },
+  { id: 'ac1', title: 'Carbon Saver I', description: 'Save 50kg of CO2', badgeIcon: '🌱', milestoneKg: 50, type: 'carbon' },
+  { id: 'ac2', title: 'Eco Warrior', description: 'Save 100kg of CO2', badgeIcon: '🛡️', milestoneKg: 100, type: 'carbon' },
+  { id: 'ac3', title: 'Earth Protector', description: 'Save 250kg of CO2', badgeIcon: '🌍', milestoneKg: 250, type: 'carbon' },
+  { id: 'xp1', title: 'Green Apprentice', description: 'Earn 1,000 Lifetime XP', badgeIcon: '🎓', milestoneXp: 1000, type: 'xp' },
+  { id: 'xp2', title: 'Eco Master', description: 'Earn 5,000 Lifetime XP', badgeIcon: '👑', milestoneXp: 5000, type: 'xp' },
+  { id: 'st1', title: 'Consistent Saver', description: 'Reach a 7-day streak', badgeIcon: '⚡', milestoneStreak: 7, type: 'streak' },
+  { id: 'st2', title: 'Green Devotee', description: 'Reach a 30-day streak', badgeIcon: '🔥', milestoneStreak: 30, type: 'streak' },
+  { id: 'ms1', title: 'Mission Accomplished', description: 'Complete 5 missions', badgeIcon: '🎯', milestoneMissions: 5, type: 'mission' },
 ];
 
 export const DEFAULT_HABITS: Habit[] = [

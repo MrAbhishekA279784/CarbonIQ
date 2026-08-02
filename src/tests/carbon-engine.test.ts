@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateFootprint } from '../lib/carbon-engine';
+import { calculateFootprint, applyMonthlySavings, HABIT_MONTHLY_SAVINGS_KG } from '../lib/carbon-engine';
 import { UserProfile } from '../types';
 
 const baseProfile: UserProfile = {
@@ -174,5 +174,27 @@ describe('calculateFootprint — Return Shape', () => {
     const result = calculateFootprint(baseProfile);
     const total = Object.values(result).reduce((a, b) => a + b, 0);
     expect(total).toBeGreaterThan(0);
+  });
+});
+
+describe('applyMonthlySavings', () => {
+  it('reduces the base footprint by completed habits and actions', () => {
+    const total = applyMonthlySavings(300, 3, 40);
+    expect(total).toBe(300 - 3 * HABIT_MONTHLY_SAVINGS_KG - 40);
+  });
+
+  it('never returns negative values', () => {
+    const total = applyMonthlySavings(10, 5, 200);
+    expect(total).toBe(0);
+  });
+
+  it('ignores negative habit/action counts', () => {
+    const total = applyMonthlySavings(200, -2, -50);
+    expect(total).toBe(200);
+  });
+
+  it('keeps footprint when no habits or actions are saved', () => {
+    const total = applyMonthlySavings(250, 0, 0);
+    expect(total).toBe(250);
   });
 });

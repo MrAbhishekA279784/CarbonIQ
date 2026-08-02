@@ -1,15 +1,17 @@
 import { useAppStore } from "../store";
 import { Card } from "../components/ui/card";
-import { User, Clock, Settings, HelpCircle, ChevronRight, Leaf, Target, Zap, Trophy, BarChart2, } from "lucide-react";
+import { User, Clock, Settings, HelpCircle, ChevronRight, Leaf, Target, Zap, Trophy, BarChart2, Plus } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { ProfileEditModal, HelpSupportModal } from '../components/profile/ProfileModals';
+import { ProfileEditModal, HelpSupportModal, TreePlantModal } from '../components/profile/ProfileModals';
 import { carbonEquivalency } from "../lib/utils";
 
 export function Profile() {
   const user = useAppStore(s => s.user);
-    const missions = useAppStore(s => s.missions);
+  const missions = useAppStore(s => s.missions);
   const actions = useAppStore(s => s.actions);
   const habits = useAppStore(s => s.habits);
+  const treesPlanted = useAppStore(s => s.treesPlanted);
+  const treesOffsetKg = useAppStore(s => s.treesOffsetKg);
   const navigate = useNavigate();
 
   // Calculate dynamic stats
@@ -17,9 +19,8 @@ export function Profile() {
   const habitsSaved = habits.filter(h => h.completed).length * 1.5;
   const missionsSaved = missions?.filter(m => m.completed).length * 5;
   
-  const totalSaved = Math.round(actionsSaved + habitsSaved + missionsSaved);
-  
-  const treesPlanted = Math.floor(totalSaved / 20) || 0;
+  // Trees planted offset is added to the total carbon saved.
+  const totalSaved = Math.round(actionsSaved + habitsSaved + missionsSaved + (treesOffsetKg || 0));
   
   const energyActionsSaved = actions.filter(a => a.completed && a.category === 'Home Energy').reduce((sum, a) => sum + (a.carbonReduction || 0), 0);
   const daysElectricity = Math.floor(energyActionsSaved / 1.5) || 0;
@@ -41,20 +42,29 @@ export function Profile() {
           </div>
           <div>
             <h2 className="text-xl font-bold">{user.name}</h2>
-            <p className="text-sm text-green-100 mb-1">{user.xp >= 500 ? 'Sustainability Champion' : 'Eco Explorer'} • Level {user.level}</p>
+            <p className="text-sm text-green-100 mb-1">{user.lifetimeXp >= 1000 ? 'Sustainability Champion' : 'Eco Explorer'} • Level {user.level}</p>
             <div className="flex items-center space-x-2 mb-2">
               <div className="w-32 h-1.5 bg-green-900/40 rounded-full overflow-hidden">
                 <div 
                   className="h-full bg-white rounded-full transition-all duration-1000" 
-                  style={{ width: `${Math.min(100, (user.xp / 500) * 100)}%` }}
+                  style={{ width: `${Math.min(100, ((user.lifetimeXp || 0) / 500) * 100)}%` }}
                 ></div>
               </div>
-              <span className="text-[10px] font-bold text-green-100">{user.xp} / 500 XP</span>
+              <span className="text-[10px] font-bold text-green-100">Lifetime {user.lifetimeXp || 0} XP</span>
             </div>
             <div className="inline-flex items-center space-x-1.5 bg-white/20 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest backdrop-blur-md border border-white/10">
                <span className="text-amber-300">★</span>
                <span>{(user.ecoPoints || 0).toLocaleString()} EcoPoints</span>
             </div>
+            {(user.streak || 0) > 0 && (
+              <div className="mt-2 inline-flex items-center space-x-2 text-[10px] font-bold text-orange-100">
+                <span>🔥 {user.streak} day streak</span>
+                <span>•</span>
+                <span>Best: {user.longestStreak || 0} days</span>
+                <span>•</span>
+                <span>{user.totalActiveDays || 0} active days</span>
+              </div>
+            )}
           </div>
           <div className="absolute right-0 top-1/2 -translate-y-1/2 opacity-20 text-6xl">
              🏅
@@ -83,11 +93,27 @@ export function Profile() {
              </Card>
              
              <Card className="rounded-2xl border-none shadow-sm flex flex-col justify-center bg-white p-4">
-               <div className="flex items-center space-x-2 mb-2 text-green-600">
-                 <span className="text-lg leading-none">🌲</span>
-                 <span className="font-semibold text-neutral-500 text-xs">Trees Planted</span>
+               <div className="flex items-center justify-between mb-2">
+                 <div className="flex items-center space-x-2 text-green-600">
+                   <span className="text-lg leading-none">🌲</span>
+                   <span className="font-semibold text-neutral-500 text-xs">Trees Planted</span>
+                 </div>
+                 <TreePlantModal trigger={
+                   <button
+                     aria-label="Plant a tree"
+                     title="Add trees you planted"
+                     className="w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center shadow-sm hover:bg-green-700 hover:scale-110 active:scale-95 transition-all"
+                   >
+                     <Plus size={14} strokeWidth={3} />
+                   </button>
+                 } />
                </div>
-               <div className="text-xl font-bold text-neutral-900">{treesPlanted}</div>
+               <div className="text-xl font-bold text-neutral-900 flex items-baseline justify-between pr-1">
+                 {treesPlanted}
+                 {treesOffsetKg > 0 && (
+                   <span className="text-[10px] font-semibold text-neutral-400 leading-none">≈ {Math.round(treesOffsetKg)} kg CO₂e offset</span>
+                 )}
+               </div>
              </Card>
              
              <Card className="rounded-2xl border-none shadow-sm flex flex-col justify-center bg-white p-4">

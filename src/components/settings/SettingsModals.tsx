@@ -1,6 +1,79 @@
 import React, { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../ui/dialog';
 import { Button } from '../ui/button';
+import { Trash2, AlertTriangle, Loader2 } from 'lucide-react';
+import { useAppStore } from '../../store';
+
+export function DeleteAccountModal({ trigger }: { trigger: React.ReactNode }) {
+  const deleteAccount = useAppStore(s => s.deleteAccount);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleDelete = async () => {
+    setLoading(true);
+    setMessage(null);
+    const result = await deleteAccount();
+    setLoading(false);
+
+    if (result.success) {
+      setMessage({ type: 'success', text: 'Your account and all associated data have been permanently deleted.' });
+      // Sign-out happens inside deleteAccount; the auth listener redirects to login.
+      setTimeout(() => setOpen(false), 1200);
+    } else {
+      setMessage({ type: 'error', text: result.error || 'Failed to delete your account. Please try again.' });
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger>{trigger}</DialogTrigger>
+      <DialogContent className="sm:max-w-[425px] bg-white">
+        <DialogHeader>
+          <DialogTitle className="text-xl font-black text-red-600 flex items-center gap-2">
+            <Trash2 size={20} /> Delete Account
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-100 rounded-xl">
+            <AlertTriangle size={18} className="text-red-500 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-red-700 font-medium leading-relaxed">
+              This action is permanent. All profile data, history, missions, badges, leaderboard entries and carbon
+              data will be deleted.
+            </p>
+          </div>
+
+          {message && (
+            <div className={`p-3 rounded-xl text-sm font-bold ${
+              message.type === 'success' ? 'bg-green-50 border border-green-100 text-green-700' : 'bg-red-50 border border-red-100 text-red-600'
+            }`}>
+              {message.text}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={loading}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={loading}
+              onClick={handleDelete}
+              className="bg-red-600 hover:bg-red-700 text-white font-bold"
+            >
+              {loading ? (
+                <span className="flex items-center gap-2"><Loader2 size={16} className="animate-spin" /> Deleting…</span>
+              ) : (
+                <span className="flex items-center gap-2"><Trash2 size={16} /> Delete Permanently</span>
+              )}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export function PrivacySecurityModal({ trigger }: { trigger: React.ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -79,32 +152,4 @@ export function NotificationsModal({ trigger }: { trigger: React.ReactNode }) {
   );
 }
 
-export function LanguageModal({ trigger }: { trigger: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const [lang, setLang] = useState('English');
 
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger>
-        {trigger}
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px] bg-white">
-        <DialogHeader>
-          <DialogTitle>Language & Region</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-2">
-           {['English', 'Hindi'].map((l) => (
-              <div 
-                key={l} 
-                onClick={() => setLang(l)}
-                className={`p-3 rounded-lg cursor-pointer border ${lang === l ? 'border-primary bg-green-50 text-green-800' : 'border-neutral-100 hover:bg-neutral-50 text-neutral-600'}`}
-              >
-                 <span className="font-semibold text-sm">{l}</span>
-              </div>
-           ))}
-           <Button className="w-full mt-4" onClick={() => setOpen(false)}>Confirm</Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}

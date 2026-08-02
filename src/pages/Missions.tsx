@@ -128,10 +128,11 @@ export function Missions() {
                            <Button 
                              variant="secondary" 
                              size="sm" 
-                             className="h-7 rounded-full text-[10px] font-black uppercase tracking-wider bg-green-50 text-green-700 hover:bg-green-100 border border-green-100"
+                             disabled={miss.current < miss.target}
+                             className="h-7 rounded-full text-[10px] font-black uppercase tracking-wider bg-green-50 text-green-700 hover:bg-green-100 border border-green-100 disabled:bg-neutral-100 disabled:text-neutral-400 disabled:border-neutral-100"
                              onClick={() => completeMission(miss.id)}
                            >
-                             Complete
+                             {miss.current >= miss.target ? 'Complete' : 'In Progress'}
                            </Button>
                         ) : (
                           <Button 
@@ -182,7 +183,12 @@ export function Missions() {
                         {ach.unlockedAt ? (
                           <span className="text-primary">Earned: {new Date(ach.unlockedAt).toLocaleDateString()}</span>
                         ) : (
-                          <span>Reach {ach.milestoneKg}kg goal</span>
+                          <span>
+                            {ach.type === 'xp' ? `Reach ${(ach.milestoneXp ?? 0).toLocaleString()} lifetime XP`
+                              : ach.type === 'streak' ? `Reach a ${ach.milestoneStreak ?? 0}-day streak`
+                              : ach.type === 'mission' ? `Complete ${ach.milestoneMissions ?? 0} missions`
+                              : `Reach ${ach.milestoneKg ?? 0}kg saved`}
+                          </span>
                         )}
                       </div>
                       {ach.unlockedAt && (

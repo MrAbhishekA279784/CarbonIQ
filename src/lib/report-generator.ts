@@ -36,7 +36,8 @@ export const generatePDFReport = (user: UserProfile, carbonData: CarbonData) => 
   doc.setFont("helvetica", "normal");
   doc.text(`Name: ${user.name}`, 20, 80);
   doc.text(`Location: ${user.city}`, 20, 88);
-  doc.text(`Eco Status: Level ${user.level} (${user.xp} XP)`, 20, 96);
+  doc.text(`Eco Status: Level ${user.level} (Lifetime ${user.lifetimeXp || 0} XP)`, 20, 96);
+  doc.text(`Streak: ${user.streak || 0} days (best ${user.longestStreak || 0})`, 20, 104);
 
   // Footprint Summary
   doc.setFontSize(18);

@@ -140,3 +140,45 @@ describe('generateRecommendations — Edge Cases', () => {
     expect(uniqueIds.size).toBe(ids.length);
   });
 });
+
+describe('generateRecommendations — Guaranteed 6-8', () => {
+  it('returns between 6 and 8 recommendations for a sparse profile', () => {
+    const result = generateRecommendations(baseProfile, baseFootprint);
+    expect(result.length).toBeGreaterThanOrEqual(6);
+    expect(result.length).toBeLessThanOrEqual(8);
+  });
+
+  it('returns between 6 and 8 recommendations for an ideal profile', () => {
+    const idealProfile = {
+      ...baseProfile,
+      transportMode: 'Cycle',
+      foodPreference: 'Vegan',
+      shoppingHabits: 'Rarely',
+      wasteHabits: 'Both',
+      electricityUsage: 50,
+    };
+    const result = generateRecommendations(idealProfile, baseFootprint);
+    expect(result.length).toBeGreaterThanOrEqual(6);
+    expect(result.length).toBeLessThanOrEqual(8);
+  });
+
+  it('every recommendation has a unique title', () => {
+    const result = generateRecommendations(baseProfile, baseFootprint);
+    const titles = result.map(r => r.title.toLowerCase());
+    const uniqueTitles = new Set(titles);
+    expect(uniqueTitles.size).toBe(titles.length);
+  });
+});
+
+describe('generateRecommendations — Completed Filtering', () => {
+  it('never returns an action already completed', () => {
+    const result = generateRecommendations(baseProfile, baseFootprint, ['1', '2']);
+    expect(result.some(r => r.id === '1' || r.id === '2')).toBe(false);
+  });
+
+  it('tops up to 6 minimum when completed actions shrink the pool', () => {
+    const result = generateRecommendations(baseProfile, baseFootprint, ['1', '2', '3', '5', '6', '7', 'ev1', 'walk1', 'meat1', 'shop2', 'recycle1']);
+    expect(result.length).toBeGreaterThanOrEqual(6);
+    expect(result.length).toBeLessThanOrEqual(8);
+  });
+});

@@ -1,9 +1,47 @@
 import { create } from 'zustand';
-import { UserProfile, CarbonData, Mission, INITIAL_USER, INITIAL_CARBON_DATA, ActionItem, Achievement, DEFAULT_ACHIEVEMENTS, Habit, DEFAULT_HABITS } from './types';
+import { UserProfile, CarbonData, Mission, INITIAL_USER, INITIAL_CARBON_DATA, ActionItem, Achievement, DEFAULT_ACHIEVEMENTS, Habit, DEFAULT_HABITS, DailyRecord, TreeEntry } from './types';
 import axios from 'axios';
 import { db, auth } from './lib/firebase';
-import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, orderBy, limit, onSnapshot, serverTimestamp, addDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, orderBy, limit, addDoc, deleteDoc, writeBatch, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { deleteUser, signOut } from 'firebase/auth';
 import { handleFirestoreError, OperationType } from './lib/firestore-utils';
+import { applyMonthlySavings } from './lib/carbon-engine';
+import { ecoLevelFromLifetimeXp, CO2_PER_TREE } from './lib/utils';
+
+function normalizeLevelFromLifetimeXp(user: UserProfile): UserProfile {
+  if (typeof user.lifetimeXp === 'number' && user.lifetimeXp > 0) {
+    const derivedLevel = ecoLevelFromLifetimeXp(user.lifetimeXp);
+    if (derivedLevel !== user.level) {
+      return {
+        ...user,
+        level: derivedLevel,
+        xp: user.lifetimeXp % 500
+      };
+    }
+  }
+  return user;
+}
+
+function getDaysDifference(date1Str: string, date2Str: string): number {
+  const d1 = new Date(date1Str);
+  const d2 = new Date(date2Str);
+  const utc1 = Date.UTC(d1.getFullYear(), d1.getMonth(), d1.getDate());
+  const utc2 = Date.UTC(d2.getFullYear(), d2.getMonth(), d2.getDate());
+  return Math.floor((utc2 - utc1) / (1000 * 60 * 60 * 24));
+}
+
+function recomputeCarbonData(
+  breakdown: CarbonData['breakdown'],
+  habits: Habit[],
+  actions: ActionItem[],
+  budget: number
+): Pick<CarbonData, 'total' | 'spent'> {
+  const rawTotal = Object.values(breakdown).reduce((sum, v) => sum + (v || 0), 0);
+  const completedHabitCount = habits.filter(h => h.completed).length;
+  const actionSavings = actions.filter(a => a.completed).reduce((sum, a) => sum + (a.carbonReduction || 0), 0);
+  const total = applyMonthlySavings(Math.round(rawTotal), completedHabitCount, actionSavings);
+  return { total, spent: Math.min(total, budget) };
+}
 
 axios.defaults.timeout = 10000;
 
@@ -34,6 +72,10 @@ interface AppState {
   habits: Habit[];
   activities: Activity[];
   notifications: Notification[];
+  dailyHistory: DailyRecord[];
+  treesPlanted: number;
+  treesOffsetKg: number;
+  treeEntries: TreeEntry[];
   isLoading: boolean;
   
   // Actions
@@ -50,17 +92,33 @@ interface AppState {
   removeHabit: (id: string) => Promise<void>;
   setReductionGoal: (goal: number) => Promise<void>;
   completeMission: (id: string) => Promise<void>;
-  addActivity: (type: 'action' | 'mission' | 'habit' | 'profile' | 'badge' | 'level', title: string, description: string, metadata?: Record<string, unknown>) => Promise<void>;
+  addActivity: (type: 'action' | 'mission' | 'habit' | 'profile' | 'badge' | 'level' | 'tree', title: string, description: string, metadata?: Record<string, unknown>) => Promise<void>;
   addNotification: (title: string, message: string, link?: string) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
   addXPEcoPoints: (xpGain: number, ecoPointsGain: number) => Promise<void>;
   updateStreak: () => Promise<void>;
+  checkDailyReset: () => Promise<void>;
+  updateMissionProgress: () => void;
+  addTree: (count: number, date: string, notes?: string) => Promise<void>;
+  deleteAccount: () => Promise<{ success: boolean; error?: string }>;
   clearStore: () => void;
 }
 
 let unsubscribeActivities: (() => void) | null = null;
 let unsubscribeNotifications: (() => void) | null = null;
 let unsubscribeUser: (() => void) | null = null;
+
+// Account/session isolation guard. Every user-scoped async operation captures
+// the current generation: if it changed (sign-out, sign-in as another account,
+// app reset), stale reads/snapshots are discarded instead of writing data from
+// a previous account into the store.
+let syncGeneration = 0;
+
+// Returns true only while the given uid is still the authenticated account for
+// the current sync generation. Avoids stale async results polluting the store.
+function isCurrentUid(uid: string | undefined | null): boolean {
+  return !!uid && auth.currentUser?.uid === uid;
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   user: INITIAL_USER,
@@ -71,9 +129,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   habits: DEFAULT_HABITS,
   activities: [],
   notifications: [],
+  dailyHistory: [],
+  treesPlanted: 0,
+  treesOffsetKg: 0,
+  treeEntries: [],
   isLoading: false,
 
   clearStore: () => {
+    // Invalidate every pending async operation from the previous session.
+    syncGeneration += 1;
     if (unsubscribeActivities) unsubscribeActivities();
     if (unsubscribeNotifications) unsubscribeNotifications();
     if (unsubscribeUser) unsubscribeUser();
@@ -89,49 +153,120 @@ export const useAppStore = create<AppState>((set, get) => ({
       habits: DEFAULT_HABITS,
       activities: [],
       notifications: [],
+      dailyHistory: [],
+      treesPlanted: 0,
+      treesOffsetKg: 0,
+      treeEntries: [],
+      isLoading: false,
     });
   },
 
   syncWithFirebase: async (uid) => {
-    set({ isLoading: true });
+    // Invalidate any in-flight sync/snapshots so a previous account's data
+    // cannot race into the store after this account loads.
+    const generation = ++syncGeneration;
+
+    // Detach all previous listeners and reset user-scoped state immediately,
+    // so the dashboard never renders the previous account's data.
+    if (unsubscribeActivities) unsubscribeActivities();
+    if (unsubscribeNotifications) unsubscribeNotifications();
+    if (unsubscribeUser) unsubscribeUser();
+    unsubscribeActivities = null;
+    unsubscribeNotifications = null;
+    unsubscribeUser = null;
+    set({
+      user: INITIAL_USER,
+      carbonData: INITIAL_CARBON_DATA,
+      missions: [],
+      actions: [],
+      achievements: DEFAULT_ACHIEVEMENTS,
+      habits: DEFAULT_HABITS,
+      activities: [],
+      notifications: [],
+      dailyHistory: [],
+      treesPlanted: 0,
+      treesOffsetKg: 0,
+      treeEntries: [],
+      isLoading: true,
+    });
+
+    const isCurrent = () => syncGeneration === generation && auth.currentUser?.uid === uid;
+
     try {
       const userRef = doc(db, 'users', uid);
-      
-      if (unsubscribeUser) unsubscribeUser();
-      
+
       // Perform initial fetch to ensure store is hydrated immediately
       const initialSnap = await getDoc(userRef);
+      if (!isCurrent()) return;
       if (initialSnap.exists()) {
         const data = initialSnap.data();
         set({ 
-          user: { 
+          user: normalizeLevelFromLifetimeXp({ 
             ...INITIAL_USER, 
             ...data, 
             name: data.name || INITIAL_USER.name || "Eco Champion"
-          }, 
+          }), 
           carbonData: data.carbonData || INITIAL_CARBON_DATA,
           missions: data.missions || [],
           achievements: data.achievements || DEFAULT_ACHIEVEMENTS,
-          habits: data.habits || DEFAULT_HABITS
+          habits: data.habits || DEFAULT_HABITS,
+          actions: data.actions?.length ? data.actions : [],
+          treesPlanted: Number(data.treesPlanted) || 0,
+          treesOffsetKg: Number(data.treesOffsetKg) || 0
         });
       }
       
+      // Fetch dailyHistory once
+      const dailyHistoryQuery = query(collection(db, `users/${uid}/dailyHistory`), orderBy('date', 'desc'), limit(100));
+      try {
+        const dailyHistorySnap = await getDocs(dailyHistoryQuery);
+        if (!isCurrent()) return;
+        const dailyHistory = dailyHistorySnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as DailyRecord));
+        set({ dailyHistory });
+      } catch (error) {
+        if (!isCurrent()) return;
+        handleFirestoreError(error, OperationType.LIST, `users/${uid}/dailyHistory`);
+      }
+
+      // Fetch tree entries once and recompute totals
+      const treesQuery = query(collection(db, `users/${uid}/trees`), orderBy('createdAt', 'desc'), limit(200));
+      try {
+        const treesSnap = await getDocs(treesQuery);
+        if (!isCurrent()) return;
+        const treeEntries = treesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TreeEntry));
+        const treesPlanted = treeEntries.reduce((sum, t) => sum + (Number(t.count) || 0), 0);
+        const treesOffsetKg = Math.round(treeEntries.reduce((sum, t) => sum + (Number(t.offsetKg) || 0), 0));
+        set({ treeEntries, treesPlanted, treesOffsetKg });
+      } catch (error) {
+        if (!isCurrent()) return;
+        handleFirestoreError(error, OperationType.LIST, `users/${uid}/trees`);
+      }
+
+      // Run daily reset check
+      await get().checkDailyReset();
+      if (!isCurrent()) return;
+
       unsubscribeUser = onSnapshot(userRef, (userSnap) => {
+        if (!isCurrent()) return;
         if (userSnap.exists()) {
           const data = userSnap.data();
           set({ 
-            user: { 
+            user: normalizeLevelFromLifetimeXp({ 
               ...INITIAL_USER, 
               ...data, 
               name: data.name || INITIAL_USER.name || "Eco Champion"
-            }, 
+            }), 
             carbonData: data.carbonData || INITIAL_CARBON_DATA,
             missions: data.missions || [],
             achievements: data.achievements || DEFAULT_ACHIEVEMENTS,
-            habits: data.habits || DEFAULT_HABITS
+            habits: data.habits || DEFAULT_HABITS,
+            actions: data.actions?.length ? data.actions : [],
+            treesPlanted: Number(data.treesPlanted) || get().treesPlanted || 0,
+            treesOffsetKg: Number(data.treesOffsetKg) || get().treesOffsetKg || 0
           });
         }
       }, (error) => {
+        if (!isCurrent()) return;
         handleFirestoreError(error, OperationType.GET, `users/${uid}`);
       });
       
@@ -140,24 +275,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Fetch activities once instead of real-time listener
       const activitiesQuery = query(collection(db, `users/${uid}/activities`), orderBy('timestamp', 'desc'), limit(50));
       getDocs(activitiesQuery).then((snap) => {
+        if (!isCurrent()) return;
         const activities = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Activity));
         set({ activities });
       }).catch((error) => {
+        if (!isCurrent()) return;
         handleFirestoreError(error, OperationType.LIST, `users/${uid}/activities`);
       });
       unsubscribeActivities = null;
 
       const notificationsQuery = query(collection(db, `users/${uid}/notifications`), orderBy('timestamp', 'desc'), limit(50));
       unsubscribeNotifications = onSnapshot(notificationsQuery, (snap) => {
+        if (!isCurrent()) return;
         const notifications = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification));
         set({ notifications });
       }, (error) => {
+        if (!isCurrent()) return;
         handleFirestoreError(error, OperationType.LIST, `users/${uid}/notifications`);
       });
     } catch (error) {
+      if (!isCurrent()) return;
       handleFirestoreError(error, OperationType.GET, `users/${uid}`);
     } finally {
-      set({ isLoading: false });
+      if (isCurrent()) set({ isLoading: false });
     }
   },
 
@@ -202,28 +342,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updateCarbonData: async () => {
-    const { user, carbonData } = get();
+    const uid = auth.currentUser?.uid;
+    const { user, carbonData, habits, actions } = get();
     try {
       const response = await axios.post("/api/carbon/calculate", { profile: user });
-      const { total, breakdown } = response.data;
-      
-      const budget = 300; 
+      if (!isCurrentUid(uid)) return;
+      const { breakdown } = response.data;
+
+      const budget = 300;
+      const { total: adjustedTotal, spent } = recomputeCarbonData(breakdown, habits, actions, budget);
+
       const newCarbonData = {
         ...carbonData,
-        total: Math.round(total),
-        spent: Math.round(total),
+        total: adjustedTotal,
+        spent,
         budget,
         breakdown
       };
-      
+
       set({ carbonData: newCarbonData });
-      
+
       if (auth.currentUser) {
         try {
           const userRef = doc(db, 'users', auth.currentUser.uid);
           await updateDoc(userRef, { carbonData: newCarbonData });
-          
-          // Also update leaderboard entry
+
           const lbRef = doc(db, 'leaderboard', auth.currentUser.uid);
           await setDoc(lbRef, {
             uid: auth.currentUser.uid,
@@ -231,13 +374,15 @@ export const useAppStore = create<AppState>((set, get) => ({
             photoURL: auth.currentUser.photoURL,
             level: user.level,
             ecoPoints: user.ecoPoints,
+            lifetimeXp: user.lifetimeXp || 0,
+            streak: user.streak || 0,
             updatedAt: serverTimestamp()
           }, { merge: true });
         } catch (error) {
           handleFirestoreError(error, OperationType.WRITE, `users/${auth.currentUser.uid}/carbonData`);
         }
       }
-      
+
       await get().checkAchievements();
     } catch (error: unknown) {
       console.error("Failed to update carbon data", error instanceof Error ? error.message : String(error));
@@ -245,22 +390,53 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   fetchRecommendations: async () => {
-    const { user, carbonData } = get();
+    const uid = auth.currentUser?.uid;
+    const { user, carbonData, actions: existingActions } = get();
     try {
+      const completedIds = existingActions.filter(a => a.completed).map(a => a.id);
       const response = await axios.post("/api/recommendations", { 
         profile: user, 
-        footprint: carbonData.breakdown 
+        footprint: carbonData.breakdown,
+        completedIds
       });
-      set({ actions: response.data });
+      if (!isCurrentUid(uid)) return;
+      const incoming = response.data as ActionItem[];
+
+      // Fresh recommendations with completion status restored.
+      const fresh = incoming.map((action) => {
+        const prev = existingActions.find(a => a.id === action.id);
+        return prev && prev.completed ? { ...action, completed: true } : action;
+      });
+
+      // Promote any locally-completed action the engine no longer returns
+      // (it is excluded as "permanently completed") so its card stays visible.
+      const completed = existingActions.filter(a => a.completed);
+
+      // Completed cards come first so they are never dropped by the 8-cap;
+      // the remaining slots belong to the fresh, uncompleted recommendations.
+      const merged = [...completed, ...fresh.filter(a => !a.completed)];
+      const capped = merged.slice(0, 8);
+      set({ actions: capped });
+
+      if (auth.currentUser && capped.length > 0) {
+        try {
+          const userRef = doc(db, 'users', auth.currentUser.uid);
+          await updateDoc(userRef, { actions: capped });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}/actions`);
+        }
+      }
     } catch (error) {
       console.error("Failed to fetch recommendations", error);
     }
   },
 
   fetchMissions: async () => {
+    const uid = auth.currentUser?.uid;
     const { user, missions: existingMissions } = get();
     try {
       const response = await axios.post("/api/missions", { profile: user });
+      if (!isCurrentUid(uid)) return;
       const incomingMissions = response.data;
       
       const mergedMissions = incomingMissions.map((incoming: Mission) => {
@@ -283,32 +459,67 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  completeAction: async (id) => {
+completeAction: async (id) => {
     const { actions } = get();
     const action = actions.find(a => a.id === id);
     if (!action || action.completed) return;
 
+    // Mark only this action as completed; the rest of the list stays intact.
     const newActions = actions.map(a => a.id === id ? { ...a, completed: true } : a);
     set({ actions: newActions });
-    
+
+    // Persist completion in Firestore so it survives a reload.
+    if (auth.currentUser) {
+      try {
+        const userRef = doc(db, 'users', auth.currentUser.uid);
+        await updateDoc(userRef, { actions: newActions, completedActionIds: newActions.filter(a => a.completed).map(a => a.id) });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}/actions`);
+      }
+    }
+
     // Add XP and EcoPoints for completing an action
     await get().addXPEcoPoints(15, 20);
     await get().updateStreak();
+    await get().updateMissionProgress();
     await get().addActivity('action', 'Action Completed', `You completed: ${action.title}`);
     await get().checkAchievements();
+
+    // Reduce today's carbon footprint from the completed action's savings.
+    await get().updateCarbonData();
+
+    // Refresh recommendations — completed action stays excluded from the engine
+    // while every other recommendation remains visible.
+    await get().fetchRecommendations();
   },
 
   checkAchievements: async () => {
-    const { carbonData, achievements } = get();
+    const { carbonData, achievements, user, missions } = get();
     const baseline = 350;
     const historyValues = carbonData.history || [];
     const totalSpent = historyValues.reduce((sum, h) => sum + h.value, 0);
     const totalPotential = historyValues.length * baseline;
     const totalSaved = Math.max(0, totalPotential - totalSpent + (baseline - carbonData.total));
+    const lifetimeXp = user.lifetimeXp || 0;
+    const currentStreak = user.streak || 0;
+    const completedMissionsCount = missions.filter(m => m.completed).length;
 
     let newlyUnlocked = false;
     const updatedAchievements = achievements.map(ach => {
-      if (!ach.unlockedAt && totalSaved >= ach.milestoneKg) {
+      if (ach.unlockedAt) return ach;
+
+      let unlocked = false;
+      if (ach.type === 'carbon') {
+        unlocked = totalSaved >= (ach.milestoneKg ?? Infinity);
+      } else if (ach.type === 'xp') {
+        unlocked = lifetimeXp >= (ach.milestoneXp ?? Infinity);
+      } else if (ach.type === 'streak') {
+        unlocked = currentStreak >= (ach.milestoneStreak ?? Infinity);
+      } else if (ach.type === 'mission') {
+        unlocked = completedMissionsCount >= (ach.milestoneMissions ?? Infinity);
+      }
+
+      if (unlocked) {
         newlyUnlocked = true;
         const timestamp = new Date().toISOString();
         get().addActivity('badge', 'Badge Unlocked', `Unlocked: ${ach.title}`);
@@ -331,8 +542,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  updateMissionProgress: () => {
+    const { missions, actions, habits } = get();
+    const categoryHabitMap: Record<string, string[]> = {
+      'Transport': ['h4'],
+      'Home Energy': ['h3'],
+      'Food': ['h2', 'h5'],
+      'Shopping': ['h1'],
+      'Waste': ['h2']
+    };
+    const updatedMissions = missions.map(m => {
+      if (m.completed) return m;
+      const habitIds = categoryHabitMap[m.category] || [];
+      const habitProgress = habits.filter(h => habitIds.includes(h.id) && h.completed).length;
+      const actionProgress = actions.filter(a => a.category === m.category && a.completed).length;
+      const current = Math.min(m.target, Math.max(m.current, habitProgress + actionProgress));
+      return { ...m, current };
+    });
+    set({ missions: updatedMissions });
+  },
+
   toggleHabit: async (id) => {
-    const { habits } = get();
+    const { habits, actions, carbonData } = get();
     const habitToToggle = habits.find(h => h.id === id);
     if (!habitToToggle) return;
     
@@ -343,14 +574,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isCompleting) {
       await get().addXPEcoPoints(5, 5); // +XP
       await get().updateStreak();
-    } else {
-      await get().addXPEcoPoints(-5, -5); // -XP
+      await get().updateMissionProgress();
     }
+    
+    // Completing a habit lowers today's emissions; skipping raises them.
+    const { total, spent } = recomputeCarbonData(carbonData.breakdown, newHabits, actions, carbonData.budget || 300);
+    const updatedCarbon = { ...carbonData, total, spent };
+    set({ carbonData: updatedCarbon });
 
     if (auth.currentUser) {
       try {
         const userRef = doc(db, 'users', auth.currentUser.uid);
-        await updateDoc(userRef, { habits: newHabits });
+        await updateDoc(userRef, { habits: newHabits, carbonData: updatedCarbon });
+        const lbRef = doc(db, 'leaderboard', auth.currentUser.uid);
+        await updateDoc(lbRef, { updatedAt: serverTimestamp() });
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}/habits`);
       }
@@ -375,22 +612,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   removeHabit: async (id) => {
-    const { habits } = get();
+    const { habits, actions, carbonData } = get();
     const habitToRemove = habits.find(h => h.id === id);
     if (!habitToRemove) return;
     
-    // Reverse XP if it was completed
     if (habitToRemove.completed) {
       await get().addXPEcoPoints(-5, -5);
     }
     
     const newHabits = habits.filter(h => h.id !== id);
     set({ habits: newHabits });
+
+    const { total, spent } = recomputeCarbonData(carbonData.breakdown, newHabits, actions, carbonData.budget || 300);
+    const updatedCarbon = { ...carbonData, total, spent };
+    set({ carbonData: updatedCarbon });
     
     if (auth.currentUser) {
       try {
         const userRef = doc(db, 'users', auth.currentUser.uid);
-        await updateDoc(userRef, { habits: newHabits });
+        await updateDoc(userRef, { habits: newHabits, carbonData: updatedCarbon });
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}/habits`);
       }
@@ -429,6 +669,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { missions } = get();
     const mission = missions.find(m => m.id === id);
     if (!mission || mission.completed) return;
+    if (!mission.current || mission.current < mission.target) return;
 
     const newMissions = missions.map(m => m.id === id ? { ...m, completed: true, current: m.target } : m);
     set({ missions: newMissions });
@@ -446,6 +687,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     await get().addActivity('mission', 'Mission Accomplished', `Completed: ${mission.title}`);
+    await get().checkAchievements();
   },
 
   addXPEcoPoints: async (xpGain, ecoPointsGain) => {
@@ -475,31 +717,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    let newXp = (user.xp || 0) + xpGain;
-    let newLevel = user.level || 1;
-    let newEcoPoints = (user.ecoPoints || 0) + ecoPointsGain;
+const newLifetimeXp = Math.max(0, (user.lifetimeXp || 0) + Math.max(0, xpGain));
+    const newEcoPoints = Math.max(0, (user.ecoPoints || 0) + ecoPointsGain);
 
-    // Handle level down if XP goes negative over a level boundary
-    while (newXp < 0 && newLevel > 1) {
-      newLevel -= 1;
-      newXp += 500;
-    }
-    
-    // Don't allow XP to go below 0 on level 1
-    if (newXp < 0) newXp = 0;
-    
-    // Don't allow EcoPoints to go below 0
-    if (newEcoPoints < 0) newEcoPoints = 0;
+    // Eco Level depends ONLY on Lifetime XP and never decreases.
+    const newLevel = ecoLevelFromLifetimeXp(newLifetimeXp);
+    const newXp = newLifetimeXp % 500;
 
-    // Handle level up
-    while (newXp >= 500) {
-      newXp -= 500;
-      newLevel += 1;
+    const leveledUp = newLevel > (user.level || 1);
+    if (leveledUp) {
       get().addActivity('level', 'Level Up!', `You've reached Level ${newLevel}`);
       get().addNotification('Level Up!', `Congratulations! You are now level ${newLevel}.`);
     }
 
-    const newUser = { ...user, xp: newXp, level: newLevel, ecoPoints: newEcoPoints };
+    const newUser = { ...user, xp: newXp, level: newLevel, ecoPoints: newEcoPoints, lifetimeXp: newLifetimeXp };
     set({ user: newUser });
     
     if (auth.currentUser) {
@@ -508,7 +739,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         await updateDoc(userRef, { 
           xp: newXp,
           level: newLevel,
-          ecoPoints: newEcoPoints
+          ecoPoints: newEcoPoints,
+          lifetimeXp: newLifetimeXp
         });
         
         // Update leaderboard
@@ -516,8 +748,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         await updateDoc(lbRef, { 
           level: newLevel, 
           ecoPoints: newEcoPoints,
+          lifetimeXp: newLifetimeXp,
+          streak: user.streak || 0,
           updatedAt: serverTimestamp()
         });
+
+        // After updating user stats, recalculate mission progress and unlock if needed
+  
       } catch (error) {
         handleFirestoreError(error, OperationType.WRITE, `users/${auth.currentUser.uid}/stats`);
       }
@@ -530,36 +767,116 @@ export const useAppStore = create<AppState>((set, get) => ({
     const lastActivity = user.lastActivityDate;
 
     let newStreak = user.streak || 0;
-    
+
     if (!lastActivity) {
       newStreak = 1;
     } else {
-      const lastDate = new Date(lastActivity);
-      const todayDate = new Date(today);
-      const diffTime = Math.abs(todayDate.getTime() - lastDate.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
+      const diffDays = getDaysDifference(lastActivity, today);
+
       if (diffDays === 1) {
         newStreak += 1;
       } else if (diffDays > 1) {
         newStreak = 1;
       }
     }
-    
+
+    const newLongestStreak = Math.max(user.longestStreak || 0, newStreak);
+    const newTotalActiveDays = (user.totalActiveDays || 0) + (lastActivity === today ? 0 : 1);
+
     if (lastActivity !== today) {
-       get().setUser({ streak: newStreak, lastActivityDate: today });
-       
+       get().setUser({
+         streak: newStreak,
+         longestStreak: newLongestStreak,
+         totalActiveDays: newTotalActiveDays,
+         lastActivityDate: today
+       });
+
        if (auth.currentUser) {
          try {
            const userRef = doc(db, 'users', auth.currentUser.uid);
-           await updateDoc(userRef, { 
-             streak: newStreak, 
+           await updateDoc(userRef, {
+             streak: newStreak,
+             longestStreak: newLongestStreak,
+             totalActiveDays: newTotalActiveDays,
              lastActivityDate: today
            });
-          } catch(e) {
-            handleFirestoreError(e, OperationType.WRITE, `users/${auth.currentUser.uid}/streak`);
-          }
+           const lbRef = doc(db, 'leaderboard', auth.currentUser.uid);
+           await updateDoc(lbRef, {
+             streak: newStreak,
+             updatedAt: serverTimestamp()
+           });
+         } catch(e) {
+           handleFirestoreError(e, OperationType.WRITE, `users/${auth.currentUser.uid}/streak`);
+         }
        }
+    }
+  },
+
+  // Daily reset: archive yesterday's data, reset habits, and update last activity date.
+  checkDailyReset: async () => {
+    const { user, habits, missions, carbonData, dailyHistory } = get();
+    if (!auth.currentUser) return;
+    const todayStr = new Date().toISOString().split('T')[0];
+    const lastActivity = user.lastActivityDate;
+
+    // If no prior activity recorded, just set today as last activity.
+    if (!lastActivity) {
+      await get().setUser({ lastActivityDate: todayStr });
+      return;
+    }
+    // No reset needed if already up‑to‑date.
+    if (lastActivity === todayStr) return;
+
+    // Archive the previous day's snapshot.
+    const archiveDate = lastActivity;
+    const completedHabits = habits.filter(h => h.completed).map(h => h.id);
+    const completedMissions = missions.filter(m => m.completed).map(m => m.id);
+    const savings = Math.max(0, (carbonData.budget || 0) - (carbonData.spent || carbonData.total));
+    const newRecord: DailyRecord = {
+      id: '', // Firestore will assign ID
+      date: archiveDate,
+      carbon: Math.round(carbonData.total),
+      savings: Math.round(savings),
+      xp: user.xp || 0,
+      level: user.level || 1,
+      streak: user.streak || 0,
+      remainingBudget: Math.round(Math.max(0, (carbonData.budget || 0) - (carbonData.spent || carbonData.total))),
+      completedHabits: completedHabits,
+      completedMissions: completedMissions,
+      timestamp: new Date().toISOString()
+    };
+    try {
+      const recordRef = await addDoc(collection(db, `users/${auth.currentUser.uid}/dailyHistory`), {
+        ...newRecord,
+        createdAt: serverTimestamp()
+      });
+      const savedRecord = { id: recordRef.id, ...newRecord } as DailyRecord;
+      set({ dailyHistory: [savedRecord, ...dailyHistory] });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `users/${auth.currentUser.uid}/dailyHistory`);
+    }
+
+    // Reset daily mutable states.
+    const resetHabits = habits.map(h => ({ ...h, completed: false }));
+    set({ habits: resetHabits });
+    if (auth.currentUser) {
+      try {
+        const userRef = doc(db, 'users', auth.currentUser.uid);
+        await updateDoc(userRef, { habits: resetHabits });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}/habits`);
+      }
+    }
+
+    // Update user's last activity date to today. Streak will be refreshed on next activity.
+    await get().setUser({ lastActivityDate: todayStr });
+    if (auth.currentUser) {
+      try {
+        const userRef = doc(db, 'users', auth.currentUser.uid);
+        await updateDoc(userRef, { lastActivityDate: todayStr });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}/lastActivityDate`);
+      }
     }
   },
 
@@ -617,5 +934,119 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}/notifications/${id}`);
     }
-  }
+  },
+
+  addTree: async (count, date, notes) => {
+    const uid = auth.currentUser?.uid;
+    let safeCount = Math.max(1, Math.floor(Number(count) || 0));
+    if (!uid || safeCount <= 0) return;
+
+    // Estimated annual carbon offset per tree (kg CO2 absorbed per tree per year).
+    const offsetEach = CO2_PER_TREE;
+    const offsetKg = Math.round(safeCount * offsetEach * 10) / 10;
+    safeCount = Math.min(safeCount, 10000);
+
+    const entry: TreeEntry = {
+      count: safeCount,
+      date: date || new Date().toISOString().split('T')[0],
+      notes: notes || '',
+      offsetKg,
+      createdAt: new Date().toISOString()
+    };
+
+    const { treeEntries, treesPlanted, treesOffsetKg } = get();
+    const newTreeEntries = [entry, ...treeEntries].slice(0, 200);
+    const newTreesPlanted = (treesPlanted || 0) + safeCount;
+    const newTreesOffsetKg = Math.round(((treesOffsetKg || 0) + offsetKg) * 10) / 10;
+
+    // Optimistic update so the dashboard reflects the change immediately.
+    set({ treeEntries: newTreeEntries, treesPlanted: newTreesPlanted, treesOffsetKg: newTreesOffsetKg });
+
+    try {
+      await addDoc(collection(db, `users/${uid}/trees`), {
+        count: safeCount,
+        date: entry.date,
+        notes: notes || '',
+        offsetKg,
+        createdAt: serverTimestamp()
+      });
+
+      const userRef = doc(db, 'users', uid);
+      await updateDoc(userRef, { treesPlanted: newTreesPlanted, treesOffsetKg: newTreesOffsetKg });
+
+      await get().addActivity(
+        'tree',
+        'Trees Planted',
+        `You planted ${safeCount} tree${safeCount === 1 ? '' : 's'} — offsetting approximately ${offsetKg} kg CO₂e per year.`,
+        { count: safeCount, date: entry.date, offsetKg }
+      );
+    } catch (error) {
+      // Roll back the optimistic update on failure.
+      set({ treeEntries, treesPlanted: treesPlanted || 0, treesOffsetKg: treesOffsetKg || 0 });
+      handleFirestoreError(error, OperationType.WRITE, `users/${uid}/trees`);
+    }
+  },
+
+  deleteAccount: async () => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return { success: false, error: 'No authenticated user found.' };
+
+    // 1. Delete the Firebase Authentication account first. If this fails
+    //    (e.g. the user needs to sign in again recently), abort before
+    //    touching Firestore so we never orphan user data.
+    if (auth.currentUser) {
+      try {
+        await deleteUser(auth.currentUser);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to delete authentication account. Sign in again and retry.';
+        console.error('Auth account deletion failed:', message);
+        return { success: false, error: message };
+      }
+    }
+
+    const deletionErrors: string[] = [];
+
+    // 2. Delete the user document.
+    try {
+      await deleteDoc(doc(db, 'users', uid));
+    } catch (error) {
+      deletionErrors.push(`users/${uid}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // 3. Delete every user-owned collection (daily history, missions,
+    //    achievements, activities, notifications, trees, chats, reports).
+    const tokens: string[] = ['dailyHistory', 'activities', 'notifications', 'trees', 'missions', 'achievements', 'habits', 'chats', 'reports'];
+    for (const sub of tokens) {
+      try {
+        const snap = await getDocs(collection(db, `users/${uid}/${sub}`));
+        if (snap.empty) continue;
+        const batch = writeBatch(db);
+        snap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      } catch (error) {
+        deletionErrors.push(`users/${uid}/${sub}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    // 4. Delete the leaderboard entry.
+    try {
+      await deleteDoc(doc(db, 'leaderboard', uid));
+    } catch (error) {
+      deletionErrors.push(`leaderboard/${uid}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // 5. Sign out and clear local state (auth listener redirects to /login).
+    get().clearStore();
+    try {
+      await signOut(auth);
+    } catch (error) {
+      deletionErrors.push(`signout: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (deletionErrors.length > 0) {
+      console.error('Delete account completed with partial errors:', deletionErrors);
+    }
+
+    return { success: true };
+  },
 }));
