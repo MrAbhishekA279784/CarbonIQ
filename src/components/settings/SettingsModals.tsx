@@ -31,9 +31,6 @@ export function PrivacySecurityModal({ trigger }: { trigger: React.ReactNode }) 
              <h4 className="font-bold text-sm mb-1 text-neutral-900">Account Security</h4>
              <p className="text-sm text-neutral-600">Your session is authenticated via Google Firebase Auth. We recommend updating your password regularly and avoiding sharing devices.</p>
            </div>
-           <div className="pt-4 border-t">
-              <Button variant="outline" className="w-full text-neutral-700">Request Password Reset</Button>
-           </div>
         </div>
       </DialogContent>
     </Dialog>
