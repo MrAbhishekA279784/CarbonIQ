@@ -2,8 +2,8 @@ import { create } from 'zustand';
 import { UserProfile, CarbonData, Mission, INITIAL_USER, INITIAL_CARBON_DATA, ActionItem, Achievement, DEFAULT_ACHIEVEMENTS, Habit, DEFAULT_HABITS, DailyRecord, TreeEntry } from './types';
 import axios from 'axios';
 import { db, auth } from './lib/firebase';
-import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, orderBy, limit, addDoc, deleteDoc, writeBatch, onSnapshot, serverTimestamp } from 'firebase/firestore';
-import { deleteUser, signOut } from 'firebase/auth';
+import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, orderBy, limit, addDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+
 import { handleFirestoreError, OperationType } from './lib/firestore-utils';
 import { applyMonthlySavings } from './lib/carbon-engine';
 import { ecoLevelFromLifetimeXp, CO2_PER_TREE } from './lib/utils';
@@ -100,7 +100,6 @@ interface AppState {
   checkDailyReset: () => Promise<void>;
   updateMissionProgress: () => void;
   addTree: (count: number, date: string, notes?: string) => Promise<void>;
-  deleteAccount: () => Promise<{ success: boolean; error?: string }>;
   clearStore: () => void;
 }
 
@@ -985,68 +984,5 @@ const newLifetimeXp = Math.max(0, (user.lifetimeXp || 0) + Math.max(0, xpGain));
       set({ treeEntries, treesPlanted: treesPlanted || 0, treesOffsetKg: treesOffsetKg || 0 });
       handleFirestoreError(error, OperationType.WRITE, `users/${uid}/trees`);
     }
-  },
-
-  deleteAccount: async () => {
-    const uid = auth.currentUser?.uid;
-    if (!uid) return { success: false, error: 'No authenticated user found.' };
-
-    // 1. Delete the Firebase Authentication account first. If this fails
-    //    (e.g. the user needs to sign in again recently), abort before
-    //    touching Firestore so we never orphan user data.
-    if (auth.currentUser) {
-      try {
-        await deleteUser(auth.currentUser);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to delete authentication account. Sign in again and retry.';
-        console.error('Auth account deletion failed:', message);
-        return { success: false, error: message };
-      }
-    }
-
-    const deletionErrors: string[] = [];
-
-    // 2. Delete the user document.
-    try {
-      await deleteDoc(doc(db, 'users', uid));
-    } catch (error) {
-      deletionErrors.push(`users/${uid}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    // 3. Delete every user-owned collection (daily history, missions,
-    //    achievements, activities, notifications, trees, chats, reports).
-    const tokens: string[] = ['dailyHistory', 'activities', 'notifications', 'trees', 'missions', 'achievements', 'habits', 'chats', 'reports'];
-    for (const sub of tokens) {
-      try {
-        const snap = await getDocs(collection(db, `users/${uid}/${sub}`));
-        if (snap.empty) continue;
-        const batch = writeBatch(db);
-        snap.docs.forEach(d => batch.delete(d.ref));
-        await batch.commit();
-      } catch (error) {
-        deletionErrors.push(`users/${uid}/${sub}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-
-    // 4. Delete the leaderboard entry.
-    try {
-      await deleteDoc(doc(db, 'leaderboard', uid));
-    } catch (error) {
-      deletionErrors.push(`leaderboard/${uid}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    // 5. Sign out and clear local state (auth listener redirects to /login).
-    get().clearStore();
-    try {
-      await signOut(auth);
-    } catch (error) {
-      deletionErrors.push(`signout: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    if (deletionErrors.length > 0) {
-      console.error('Delete account completed with partial errors:', deletionErrors);
-    }
-
-    return { success: true };
   },
 }));

@@ -2,10 +2,10 @@ import React from 'react';
 import { useAuth } from '../components/auth/AuthContext';
 import { useAppStore } from '../store';
 import { Card, } from '../components/ui/card';
-import { LogOut, User, Shield, Bell, Trash2, ChevronRight } from 'lucide-react';
+import { LogOut, User, Shield, Bell, ChevronRight } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { ProfileEditModal } from '../components/profile/ProfileModals';
-import { PrivacySecurityModal, NotificationsModal, DeleteAccountModal } from '../components/settings/SettingsModals';
+import { PrivacySecurityModal, NotificationsModal } from '../components/settings/SettingsModals';
 
 export const Settings: React.FC = () => {
   const { logout } = useAuth();
@@ -87,16 +87,6 @@ export const Settings: React.FC = () => {
             <LogOut size={18} />
             <span>Sign Out</span>
           </Button>
-
-          <DeleteAccountModal trigger={
-            <Button 
-              variant="ghost" 
-              className="w-full rounded-2xl h-12 text-neutral-400 font-bold hover:bg-red-50 hover:text-red-700 transition-all flex items-center justify-center space-x-2"
-            >
-              <Trash2 size={18} />
-              <span>Delete Account</span>
-            </Button>
-          } />
         </section>
 
         <p className="text-center text-[10px] text-neutral-400 font-bold uppercase tracking-[0.2em] pt-8">
