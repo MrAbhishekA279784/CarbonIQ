@@ -220,7 +220,7 @@ async function startServer() {
       };
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         config: {
           systemInstruction: `You are an AI Sustainability Coach for CARBONIQ. 
           Analyze the user's data and provide actionable, encouraging advice.
@@ -258,7 +258,7 @@ async function startServer() {
       }));
 
       const chat = ai.chats.create({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         config: {
           systemInstruction: `You are EcoAgent AI, an expert sustainability coach.
           You help users understand and reduce their carbon footprint.
@@ -296,7 +296,7 @@ async function startServer() {
       const sanitized = sanitizeAIInput(prompt);
       
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         config: {
           systemInstruction: "You are a simulation analyzer for CARBONIQ. Analyze the what-if scenario based on the user's current footprint and profile. Provide a short, structured analysis of the impact. User Profile: " + JSON.stringify(userProfile || {}) + " Current Footprint: " + currentFootprint + " kg CO2e. Respond in concise bullet points.",
         },
@@ -318,7 +318,7 @@ async function startServer() {
       const sanitized = sanitizeAIInput(prompt);
       
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         contents: sanitized,
         config: {
           tools: [{ googleSearch: {} }]
