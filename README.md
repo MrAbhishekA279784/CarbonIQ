@@ -424,5 +424,3 @@ CarboniQ is built to **WCAG AA** compliance standards:
 <img src="https://img.shields.io/badge/Carbon_Neutral-Goal-16a34a?style=flat-square&logo=leaf" />
 
 </div>
-#   c a r b o n i q  
- 
